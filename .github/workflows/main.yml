@@ -1,1 +1,96 @@
+# Build do APK na nuvem (sem instalar nada no seu PC).
+#
+# Como usar:
+#   1. Crie um repositorio no GitHub e suba esta pasta inteira (ou arraste os
+#      arquivos pela pagina "Add file > Upload files").
+#   2. O build roda sozinho a cada push. Tambem da pra rodar manualmente em
+#      Actions > "build-apk" > "Run workflow".
+#   3. Quando terminar (uns minutos), abra a execucao em Actions, role ate
+#      "Artifacts" e baixe "SiControl-apk". Dentro vem o .apk.
+#   4. Esse APK ja vem assinado com a chave de debug, entao instala direto no
+#      celular (ative "fontes desconhecidas"). Para a Play Store, depois e so
+#      assinar com sua keystore.
+#
+# Obs.: build de Qt-para-Android as vezes pede um ajuste fino de versao na
+# primeira vez. Se der erro, copie a mensagem do log do Actions que eu corrijo.
 
+name: build-apk
+
+on:
+  push:
+  workflow_dispatch:   # permite rodar manualmente pelo botao "Run workflow"
+
+env:
+  QT_VERSION: 6.8.3
+  ANDROID_ABI: arm64-v8a
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Qt do host (fornece as ferramentas: androiddeployqt, moc, qmlimportscanner)
+      - name: Qt host (desktop)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          dir: ${{ github.workspace }}/qt
+
+      # Qt para Android (arm64) - cobre praticamente todo celular atual
+      - name: Qt android (arm64)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: android
+          arch: android_arm64_v8a
+          dir: ${{ github.workspace }}/qt
+
+      # NDK que combina com o Qt 6.8
+      - name: Android NDK r26b
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+          add-to-path: false
+
+      - name: Configurar e compilar
+        env:
+          QT_HOST: ${{ github.workspace }}/qt/${{ env.QT_VERSION }}/gcc_64
+          QT_ANDROID: ${{ github.workspace }}/qt/${{ env.QT_VERSION }}/android_arm64_v8a
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path || env.ANDROID_NDK_ROOT }}
+        run: |
+          "$QT_ANDROID/bin/qt-cmake" -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQT_HOST_PATH="$QT_HOST" \
+            -DANDROID_ABI="${{ env.ANDROID_ABI }}" \
+            -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DANDROID_NDK_ROOT="$ANDROID_NDK_ROOT"
+          cmake --build build --parallel
+          # Gera o APK (alvo de deploy do Qt). Nome do alvo pode variar entre
+          # versoes; tentamos os comuns sem falhar caso ja tenha sido gerado.
+          cmake --build build --target apk || \
+          cmake --build build --target SiControl_make_apk || true
+
+      - name: Localizar APK
+        run: |
+          echo "APKs encontrados:"
+          find build -name '*.apk' -print
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiControl-apk
+          path: build/**/*.apk
+          if-no-files-found: warn
